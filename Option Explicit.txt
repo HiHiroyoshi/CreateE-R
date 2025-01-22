@@ -1,0 +1,153 @@
+Option Explicit
+
+Sub CreateERDiagramOnAnotherSheet()
+    Dim wsData As Worksheet      ' データがあるシート
+    Dim wsER As Worksheet        ' ER図を描画するシート
+    Dim lastRow As Long
+    Dim i As Long
+    
+    ' Dictionary（テーブル名 → テキスト） 用
+    Dim dictTables As Object
+    Set dictTables = CreateObject("Scripting.Dictionary")
+    
+    ' Dictionary（外部キー情報） 用
+    Dim dictFKs As Object
+    Set dictFKs = CreateObject("Scripting.Dictionary")
+    
+    ' 1) シートをセット
+    Set wsData = ThisWorkbook.Sheets("Sheet1")  ' データを読み込むシート
+    Set wsER = ThisWorkbook.Sheets("Sheet2")    ' E-R図を描画するシート
+    
+    ' ★ 既存の図形を削除しておく (何度も実行したときに重ならないように)
+    Dim shp As Shape
+    For Each shp In wsER.Shapes
+        shp.Delete
+    Next shp
+    
+    ' 2) データを読み込み、Dictionaryに格納
+    lastRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row
+    
+    Dim tableName As String
+    Dim columnName As String
+    Dim dataType As String
+    Dim isPK As String
+    Dim ref As String
+    
+    For i = 2 To lastRow ' 2行目以降を読み込む
+        tableName = wsData.Cells(i, 1).Value
+        columnName = wsData.Cells(i, 2).Value
+        dataType = wsData.Cells(i, 3).Value
+        isPK = wsData.Cells(i, 4).Value            ' "Yes" であればPK
+        ref = wsData.Cells(i, 5).Value            ' 例: Users(ID)
+        
+        ' カラム情報を文字列化
+        Dim colInfo As String
+        colInfo = columnName & " " & dataType
+        
+        If UCase(isPK) = "YES" Then
+            colInfo = colInfo & " (PK)"
+        ElseIf Len(ref) > 0 Then
+            colInfo = colInfo & " (FK)"
+        End If
+        
+        ' テーブル辞書に追記
+        If Not dictTables.Exists(tableName) Then
+            ' テーブル名本体と区切り線を入れて開始
+            dictTables.Add tableName, tableName & vbCrLf & String(30, "-") & vbCrLf & colInfo
+        Else
+            dictTables(tableName) = dictTables(tableName) & vbCrLf & colInfo
+        End If
+        
+        ' 外部キーがある場合、テーブル間の関連を記録
+        If Len(ref) > 0 Then
+            ' 例: ref = "Users(ID)" → テーブル名=Users, カラム名=ID
+            Dim refTable As String
+            Dim refColumn As String
+            
+            ' Splitの扱いに注意（不要な空白除去など）
+            refTable = Trim(Split(ref, "(")(0))         ' "Users"
+            refColumn = Replace(Split(ref, "(")(1), ")", "") ' "ID" (括弧を削除)
+            
+            ' 「元テーブル->先テーブル」の形でキーに
+            Dim fkKey As String
+            fkKey = tableName & "->" & refTable
+            
+            ' 値は「元カラム → 先カラム」
+            Dim fkValue As String
+            fkValue = columnName & " → " & refColumn
+            
+            If Not dictFKs.Exists(fkKey) Then
+                dictFKs.Add fkKey, fkValue
+            Else
+                dictFKs(fkKey) = dictFKs(fkKey) & "; " & fkValue
+            End If
+        End If
+    Next i
+    
+    ' 3) Sheet2 にテーブル図形を描画
+    Dim dictShapes As Object
+    Set dictShapes = CreateObject("Scripting.Dictionary")
+    
+    Dim xPos As Single: xPos = 50
+    Dim yPos As Single: yPos = 50
+    Dim xStep As Single: xStep = 220
+    Dim yStep As Single: yStep = 130
+    
+    Dim tbl As Variant
+    For Each tbl In dictTables.Keys
+        Dim shpTbl As Shape
+        ' wsER上に図形を追加
+        Set shpTbl = wsER.Shapes.AddShape(msoShapeRectangle, xPos, yPos, 180, 100)
+        shpTbl.TextFrame.Characters.Text = dictTables(tbl)
+        shpTbl.Fill.ForeColor.RGB = RGB(173, 216, 230) ' 水色系
+        shpTbl.Line.ForeColor.RGB = RGB(0, 0, 0)       ' 黒枠
+        
+        ' テーブル名→図形オブジェクトの対応を記録
+        dictShapes.Add tbl, shpTbl
+        
+        ' 簡易的に縦に配置 → 下が足りなくなったら次の列に移動
+        yPos = yPos + yStep
+        If yPos > 600 Then
+            yPos = 50
+            xPos = xPos + xStep
+        End If
+    Next tbl
+    
+    ' 4) 外部キー情報を元にコネクタを描画
+    Dim fk As Variant
+    For Each fk In dictFKs.Keys
+        ' fk = "Orders->Users" のような文字列
+        Dim fromTbl As String
+        Dim toTbl As String
+        fromTbl = Split(fk, "->")(0)
+        toTbl = Split(fk, "->")(1)
+        
+        If dictShapes.Exists(fromTbl) And dictShapes.Exists(toTbl) Then
+            Dim shpFrom As Shape
+            Dim shpTo As Shape
+            Set shpFrom = dictShapes(fromTbl)
+            Set shpTo = dictShapes(toTbl)
+            
+            ' コネクタ（線）を追加
+            Dim connector As Shape
+            Set connector = wsER.Shapes.AddConnector(msoConnectorCurve, 0, 0, 10, 10)
+            
+            ' 接続を指定（Shapeオブジェクトと、どの辺に接続するか）
+            connector.ConnectorFormat.BeginConnect shpFrom, 2 ' 2=右辺 etc.
+            connector.ConnectorFormat.EndConnect shpTo, 4     ' 4=左辺 etc.
+            
+            ' 線の書式
+            connector.Line.ForeColor.RGB = RGB(0, 0, 0)
+            connector.Line.Weight = 1.5
+            
+            ' 外部キーの詳細を線上に表示
+            'connector.TextFrame.Characters.Text = dictFKs(fk)
+            'connector.TextFrame.Characters.Font.Size = 8
+            'connector.TextFrame.HorizontalAlignment = xlHAlignCenter
+            'connector.TextFrame.VerticalAlignment = xlVAlignCenter
+        End If
+    Next fk
+    
+    MsgBox "Sheet2 にER図を作成しました。"
+End Sub
+
